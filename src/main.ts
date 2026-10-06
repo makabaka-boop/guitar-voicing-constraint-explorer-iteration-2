@@ -10,11 +10,14 @@ import {
   reasonDescription,
   reasonLabel,
   searchChords,
+  searchTransitions,
   validateInput,
   type ChordResult,
   type SearchOutput,
   type Shape,
   type ShapeEvaluation,
+  type TransitionCandidate,
+  type TransitionOutput,
 } from './search';
 
 /* ---------------------------------- 状态 ---------------------------------- */
@@ -61,6 +64,12 @@ const state = {
   mode: 'preview' as 'preview' | 'custom',
   custom: [-1, -1, -1, -1, -1, -1] as Shape,
   error: null as string | null,
+  // 双和弦切换预演：anchor 为起点形状快照；tr 为当前预演结果（失效时撤销为 null）。
+  anchor: null as Shape | null,
+  nextTargets: new Set<number>([4, 8, 11]),
+  tr: null as TransitionOutput | null,
+  trSelected: 0,
+  viewing: false,
 };
 
 /* --------------------------------- 左：控制 -------------------------------- */
@@ -80,6 +89,7 @@ function buildControls(): void {
   presetField.appendChild(label('定弦预设'));
   const presetRow = div('row-inline');
   const presetSel = document.createElement('select');
+  presetSel.id = 'preset-select';
   for (const [i, p] of PRESETS.entries()) {
     const o = document.createElement('option');
     o.value = String(i);
@@ -96,6 +106,7 @@ function buildControls(): void {
   presetRow.appendChild(presetSel);
 
   const countSel = document.createElement('select');
+  countSel.id = 'string-count-select';
   for (const c of [4, 5, 6]) {
     const o = document.createElement('option');
     o.value = String(c);
@@ -157,6 +168,7 @@ function buildControls(): void {
   rootRow.style.marginBottom = '8px';
   rootRow.appendChild(document.createTextNode('快速设置：根音'));
   const rootSel = document.createElement('select');
+  rootSel.id = 'root-select';
   for (let pc = 0; pc < 12; pc++) {
     const o = document.createElement('option');
     o.value = String(pc);
@@ -183,6 +195,7 @@ function buildControls(): void {
   pcField.appendChild(rootRow);
 
   const grid = div('pc-grid');
+  grid.id = 'main-pc-grid';
   for (let pc = 0; pc < 12; pc++) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -210,6 +223,7 @@ function buildControls(): void {
   fretField.appendChild(label('最大品位（3–9）'));
   const fretRow = div('row-inline');
   const fretSel = document.createElement('select');
+  fretSel.id = 'max-fret-select';
   for (let f = 3; f <= 9; f++) {
     const o = document.createElement('option');
     o.value = String(f);
@@ -309,12 +323,55 @@ function run(): void {
       allowBarre: state.allowBarre,
     });
     state.selected = Math.min(state.selected, Math.max(0, state.output.results.length - 1));
+    // 首次得到合法结果时，自动把起点锚定为排名第一的形状，便于立即预演切换。
+    if (state.anchor === null && state.output.results.length > 0) {
+      state.anchor = state.output.results[0].shape.slice();
+    }
   }
   // 自定义形状长度跟随弦数
   if (state.custom.length !== state.tuning.length) {
     state.custom = state.tuning.map((_, s) => state.custom[s] ?? -1);
   }
+  refreshTransition();
   renderRight();
+}
+
+/**
+ * 重新计算（或撤销）双和弦切换预演。
+ * 预演只在以下条件全部成立时存在：
+ *  - 单和弦输入合法、anchor 与当前弦数一致且品位在最大品位内；
+ *  - anchor 在当前定弦、目标音级、最大品位与横按模式下仍合法
+ *    （合法性由 evaluateShape 判定，而不是由预演列表自行假设）；
+ *  - 下一和弦目标音级数量为 2..5。
+ * 任一条件因定弦、模式或输入编辑而被破坏时，撤销预演（state.tr = null），
+ * 单和弦功能不受影响。
+ */
+function refreshTransition(): void {
+  state.viewing = false;
+  const anchor = state.anchor;
+  if (!state.output || !anchor || anchor.length !== state.tuning.length) {
+    state.tr = null;
+    return;
+  }
+  if (!anchor.every((f) => Number.isInteger(f) && f >= -1 && f <= state.maxFret)) {
+    state.tr = null;
+    return;
+  }
+  const anchorEv = evaluateShape(anchor, state.tuning, [...state.targets], {
+    allowBarre: state.allowBarre,
+  });
+  if (!anchorEv.valid || state.nextTargets.size < 2 || state.nextTargets.size > 5) {
+    state.tr = null;
+    return;
+  }
+  state.tr = searchTransitions({
+    tuning: state.tuning,
+    current: anchor,
+    nextTargets: [...state.nextTargets],
+    maxFret: state.maxFret,
+    allowBarre: state.allowBarre,
+  });
+  state.trSelected = Math.min(state.trSelected, Math.max(0, state.tr.candidates.length - 1));
 }
 
 /* -------------------------------- 右：结果+指板 ------------------------------- */
@@ -330,6 +387,7 @@ function renderRight(): void {
 
   right.appendChild(renderFretboardPanel());
   renderResultsPanel();
+  renderTransitionPanel();
   renderExclusionsPanel();
 }
 
@@ -340,10 +398,22 @@ function renderFretboardPanel(): HTMLElement {
   const tabs = div('tabs');
   const tabPreview = document.createElement('button');
   tabPreview.type = 'button';
-  tabPreview.className = 'ghost' + (state.mode === 'preview' ? ' on' : '');
+  tabPreview.className = 'ghost' + (state.mode === 'preview' && !state.viewing ? ' on' : '');
   tabPreview.textContent = '预览结果';
   tabPreview.addEventListener('click', () => {
     state.mode = 'preview';
+    state.viewing = false;
+    renderRight();
+  });
+  // 仅在预演有效时可切换到切换预览。
+  const tabTransition = document.createElement('button');
+  tabTransition.type = 'button';
+  tabTransition.className = 'ghost' + (state.mode === 'preview' && state.viewing ? ' on' : '');
+  tabTransition.textContent = '双和弦切换预览';
+  tabTransition.disabled = !state.tr || state.tr.candidates.length === 0;
+  tabTransition.addEventListener('click', () => {
+    state.mode = 'preview';
+    state.viewing = true;
     renderRight();
   });
   const tabCustom = document.createElement('button');
@@ -356,31 +426,16 @@ function renderFretboardPanel(): HTMLElement {
       state.custom = state.output.results[state.selected].shape.slice();
     }
     state.mode = 'custom';
+    state.viewing = false;
     renderRight();
   });
-  tabs.append(tabPreview, tabCustom);
+  tabs.append(tabPreview, tabTransition, tabCustom);
   panel.appendChild(tabs);
 
   const board = div('fretboard-wrap');
   panel.appendChild(board);
 
-  if (state.mode === 'preview') {
-    const r = state.output?.results[state.selected];
-    if (r) {
-      renderFretboard(board, {
-        tuning: state.tuning,
-        maxFret: state.maxFret,
-        shape: r.shape,
-        targetPcs: [...state.targets],
-        editable: false,
-        preferFlat: state.preferFlat,
-        barre: r.barre ?? null,
-      });
-      panel.appendChild(renderEvalOk(r));
-    } else {
-      renderEmptyBoard(board);
-    }
-  } else {
+  if (state.mode === 'custom') {
     // 自定义形状与评估共用同一次指法结论（含横按）
     const ev = evaluateShape(state.custom, state.tuning, [...state.targets], {
       allowBarre: state.allowBarre,
@@ -409,9 +464,83 @@ function renderFretboardPanel(): HTMLElement {
     const help = div('help');
     help.textContent = '点击格子按下/取消该品；点击琴枕上方区域在开放 0 与闷音 x 之间切换。';
     panel.appendChild(help);
+    return panel;
+  }
+
+  if (state.viewing) {
+    const cand = state.tr?.candidates[state.trSelected];
+    if (cand) {
+      // 横按结论直接取自枚举结果（cand.result.barre），SVG 不另行重算。
+      renderFretboard(board, {
+        tuning: state.tuning,
+        maxFret: state.maxFret,
+        shape: cand.result.shape,
+        targetPcs: [...state.nextTargets],
+        editable: false,
+        preferFlat: state.preferFlat,
+        barre: cand.result.barre ?? null,
+        changes: cand.changes,
+      });
+      panel.appendChild(renderEvalTransition(cand));
+      return panel;
+    }
+    // 预演在查看途中被撤销（定弦/模式/输入编辑）：退回单和弦预览。
+    state.viewing = false;
+  }
+
+  const r = state.output?.results[state.selected];
+  if (r) {
+    renderFretboard(board, {
+      tuning: state.tuning,
+      maxFret: state.maxFret,
+      shape: r.shape,
+      targetPcs: [...state.targets],
+      editable: false,
+      preferFlat: state.preferFlat,
+      barre: r.barre ?? null,
+    });
+    panel.appendChild(renderEvalOk(r));
+  } else {
+    renderEmptyBoard(board);
   }
 
   return panel;
+}
+
+/** 切换候选的合法性/代价评估框（横按与逐弦变化均直接取自候选结论）。 */
+function renderEvalTransition(cand: TransitionCandidate): HTMLElement {
+  const r = cand.result;
+  const box = div('eval-box ok');
+  const title = div('eval-title');
+  title.textContent = `→ 下一和弦候选 #${state.trSelected + 1}（${statsLine(r)}）`;
+  box.appendChild(title);
+  const detail = div('eval-detail');
+  const notes = r.midi
+    .map((m) => (m === null ? 'x' : midiName(m, state.preferFlat)))
+    .join('  ');
+  const lines = [
+    `低音 → 高音：<b>${notes}</b>`,
+    `切换代价：闷音状态变化 <b>${cand.mutedChanges}</b> 弦 · 共同发声弦品位移动量之和 <b>${cand.fretMove}</b>`,
+    `下一形状排序兜底：跨度 ${r.span} · 总和 ${r.fretSum} · 形状向量 [${r.shape
+      .map((f) => (f === -1 ? 'x' : f))
+      .join(',')}]`,
+  ];
+  if (state.allowBarre) lines.push(barreLine(r.barre ?? null, r.fingers));
+  lines.push('排序：闷音变化弦数 → 共同发声品位移动量 → 跨度 → 品位总和 → 形状向量');
+  detail.innerHTML = lines.join('<br/>');
+  box.appendChild(detail);
+
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'ghost';
+  back.style.marginTop = '8px';
+  back.textContent = '返回当前和弦预览';
+  back.addEventListener('click', () => {
+    state.viewing = false;
+    renderRight();
+  });
+  box.appendChild(back);
+  return box;
 }
 
 function renderEmptyBoard(board: HTMLElement): void {
@@ -523,7 +652,10 @@ function renderResultsPanel(): void {
   state.output.results.forEach((r, i) => {
     const item = document.createElement('button');
     item.type = 'button';
-    item.className = 'result-item' + (state.mode === 'preview' && i === state.selected ? ' active' : '');
+    item.className =
+      'result-item' +
+      (state.mode === 'preview' && !state.viewing && i === state.selected ? ' active' : '') +
+      (state.anchor && shapeEq(state.anchor, r.shape) ? ' anchor' : '');
     const rank = document.createElement('span');
     rank.className = 'result-rank';
     rank.textContent = `#${i + 1}`;
@@ -538,16 +670,207 @@ function renderResultsPanel(): void {
     meta.className = 'result-meta';
     meta.textContent =
       `跨${r.span} Σ${r.fretSum} 指${r.fingers} 响${r.ringing}` +
-      (r.barre ? ` 横${r.barre.fret}品` : '');
+      (r.barre ? ` 横${r.barre.fret}品` : '') +
+      (state.anchor && shapeEq(state.anchor, r.shape) ? ' · 切换起点' : '');
     item.append(rank, chips, meta);
     item.addEventListener('click', () => {
       state.selected = i;
       state.mode = 'preview';
+      state.viewing = false;
+      // 点击结果即把切换起点锚定为该形状快照。
+      state.anchor = r.shape.slice();
+      refreshTransition();
       renderRight();
     });
     panel.appendChild(item);
   });
   right.appendChild(panel);
+}
+
+function shapeEq(a: Shape, b: Shape): boolean {
+  return a.length === b.length && a.every((f, i) => f === b[i]);
+}
+
+/* ----------------------------- 双和弦切换预演面板 ----------------------------- */
+
+function renderTransitionPanel(): void {
+  if (!state.output) return;
+  const panel = div('panel transition-panel');
+  const head = div('results-head');
+  const h = document.createElement('h2');
+  h.textContent = '双和弦切换预演';
+  head.appendChild(h);
+  panel.appendChild(head);
+
+  const help = div('help');
+  help.textContent =
+    '从上方结果点击选定当前和弦形状作为起点，再选下一和弦目标音级；' +
+    '对全部合法下一形状排序：闷音状态变化弦数 → 共同发声弦品位移动量之和 → ' +
+    '跨度 → 品位总和 → 形状向量。';
+  panel.appendChild(help);
+
+  // 起点形状
+  const anchorRow = div('row-inline');
+  anchorRow.style.margin = '8px 0';
+  const anchorLabel = document.createElement('span');
+  anchorLabel.className = 'stats';
+  anchorLabel.textContent = '当前形状：';
+  anchorRow.appendChild(anchorLabel);
+  const anchorChips = div('shape-chips');
+  anchorChips.classList.add('anchor-chips');
+  const anchor = state.anchor;
+  if (anchor) {
+    anchor.forEach((f) => {
+      const c = document.createElement('span');
+      c.className = 'chip ' + (f === -1 ? 'x' : f === 0 ? 'f0' : 'pressed');
+      c.textContent = f === -1 ? 'x' : String(f);
+      anchorChips.appendChild(c);
+    });
+  } else {
+    const none = document.createElement('span');
+    none.className = 'stats';
+    none.textContent = '尚未选择（点击搜索结果中的形状）';
+    anchorChips.appendChild(none);
+  }
+  anchorRow.appendChild(anchorChips);
+  panel.appendChild(anchorRow);
+
+  // 起点合法性：由 evaluateShape 对当前定弦/目标/模式给出唯一结论。
+  if (anchor) {
+    let anchorMsg: string;
+    let msgCls = 'help';
+    if (anchor.length !== state.tuning.length || !anchor.every((f) => f >= -1 && f <= state.maxFret)) {
+      anchorMsg = '当前形状因定弦弦数或最大品位变化已不再适用，切换预演已撤销；请从结果中重新点击一个形状作为起点。';
+      msgCls = 'transition-banner bad';
+    } else {
+      const ev = evaluateShape(anchor, state.tuning, [...state.targets], {
+        allowBarre: state.allowBarre,
+      });
+      if (ev.valid) {
+        anchorMsg = '起点形状在当前定弦、约束与指法模式下合法，可预演切换。';
+        msgCls = 'transition-banner ok';
+      } else {
+        anchorMsg = `当前形状在现有定弦/指法模式下已不合法（${ev.reason ? reasonLabel(ev.reason, state.allowBarre) : ''}），切换预演已撤销；单和弦搜索仍可正常使用。`;
+        msgCls = 'transition-banner bad';
+      }
+    }
+    const banner = div(msgCls);
+    banner.textContent = anchorMsg;
+    panel.appendChild(banner);
+  }
+
+  // 下一和弦目标音级
+  const pcField = div('field');
+  const pcLabel = div('field-label');
+  pcLabel.textContent = '下一和弦目标音级（选 2–5 个）';
+  pcField.appendChild(pcLabel);
+  const grid = div('pc-grid');
+  grid.id = 'next-pc-grid';
+  for (let pc = 0; pc < 12; pc++) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pc-btn' + (state.nextTargets.has(pc) ? ' on' : '');
+    b.textContent = pcName(pc, state.preferFlat);
+    b.addEventListener('click', () => {
+      if (state.nextTargets.has(pc)) state.nextTargets.delete(pc);
+      else state.nextTargets.add(pc);
+      refreshTransition();
+      renderRight();
+    });
+    grid.appendChild(b);
+  }
+  pcField.appendChild(grid);
+  const hint = div('count-hint');
+  const k = state.nextTargets.size;
+  hint.textContent = `已选 ${k} 个下一和弦目标音级（需要 2–5 个）`;
+  if (k < 2 || k > 5) hint.classList.add('warn');
+  pcField.appendChild(hint);
+  panel.appendChild(pcField);
+
+  // 预演结果或撤销原因
+  if (state.tr) {
+    const tr = state.tr;
+    const stat = div('stats');
+    stat.textContent = tr.truncated
+      ? `合法下一形状 ${tr.valid} 个，仅显示切换代价最小的前 20；枚举 ${tr.total} 个方案`
+      : `合法下一形状 ${tr.valid} / 枚举 ${tr.total} 个方案`;
+    panel.appendChild(stat);
+
+    if (tr.candidates.length === 0) {
+      const empty = div('transition-banner bad');
+      empty.textContent = '没有合法的下一和弦形状（空结果）。可调整下一和弦目标音级或放宽最大品位。';
+      panel.appendChild(empty);
+    } else {
+      const list = div('transition-list');
+      tr.candidates.forEach((cand, i) => {
+        list.appendChild(renderTransitionItem(cand, i));
+      });
+      panel.appendChild(list);
+    }
+  } else if (anchor && anchor.length === state.tuning.length && anchor.every((f) => f >= -1 && f <= state.maxFret)) {
+    // 锚点结构仍适用但预演撤销：下一目标数量不对，或锚点在当前模式下不再合法
+    // （具体原因横幅已在上方由 evaluateShape 给出）。这里补充输入侧提示。
+    if (state.nextTargets.size < 2 || state.nextTargets.size > 5) {
+      const why = div('transition-banner bad');
+      why.textContent = `下一和弦目标音级需选 2–5 个（当前 ${state.nextTargets.size} 个），切换预演暂不可用。`;
+      panel.appendChild(why);
+    }
+  } else {
+    const why = div('transition-banner bad');
+    why.textContent = '切换预演未激活：请在上方结果中点击一个当前仍合法的形状作为起点。';
+    panel.appendChild(why);
+  }
+
+  right.appendChild(panel);
+}
+
+function renderTransitionItem(cand: TransitionCandidate, i: number): HTMLElement {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className =
+    'result-item transition-item' + (state.viewing && i === state.trSelected ? ' active' : '');
+  const rank = document.createElement('span');
+  rank.className = 'result-rank';
+  rank.textContent = `#${i + 1}`;
+
+  const body = div('transition-body');
+  // 下一形状品位
+  const chips = div('shape-chips');
+  cand.result.shape.forEach((f) => {
+    const c = document.createElement('span');
+    c.className = 'chip ' + (f === -1 ? 'x' : f === 0 ? 'f0' : 'pressed');
+    c.textContent = f === -1 ? 'x' : String(f);
+    chips.appendChild(c);
+  });
+  body.appendChild(chips);
+
+  // 逐弦变化：起点 → 下一，颜色按 闷音变化 / 共同发声移动 / 不动 区分
+  const changes = div('transition-changes');
+  cand.changes.forEach((ch) => {
+    const cell = document.createElement('span');
+    cell.className =
+      'tr-cell ' + (ch.mutedChange ? 'mute' : ch.fretMove > 0 ? 'move' : 'hold');
+    const fv = (f: number) => (f === -1 ? 'x' : String(f));
+    cell.textContent = `${fv(ch.from)}→${fv(ch.to)}`;
+    changes.appendChild(cell);
+  });
+  body.appendChild(changes);
+
+  const meta = document.createElement('span');
+  meta.className = 'result-meta';
+  meta.textContent =
+    `闷变${cand.mutedChanges} 移动${cand.fretMove}` +
+    ` 跨${cand.result.span} Σ${cand.result.fretSum} 指${cand.result.fingers}` +
+    (cand.result.barre ? ` 横${cand.result.barre.fret}品` : '');
+
+  item.append(rank, body, meta);
+  item.addEventListener('click', () => {
+    state.trSelected = i;
+    state.mode = 'preview';
+    state.viewing = true;
+    renderRight();
+  });
+  return item;
 }
 
 function renderExclusionsPanel(): void {
@@ -582,10 +905,11 @@ declare global {
   interface Window {
     __fret: {
       searchChords: typeof searchChords;
+      searchTransitions: typeof searchTransitions;
       evaluateShape: typeof evaluateShape;
       bestFingering: typeof bestFingering;
       pcOfMidi: typeof pcOfMidi;
     };
   }
 }
-window.__fret = { searchChords, evaluateShape, bestFingering, pcOfMidi };
+window.__fret = { searchChords, searchTransitions, evaluateShape, bestFingering, pcOfMidi };

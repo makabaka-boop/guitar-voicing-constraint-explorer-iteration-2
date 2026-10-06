@@ -13,6 +13,13 @@
  * bestFingering），以最优指法所需手指数 <= maxFingers 为放行条件。
  * 开启后排除原因的判定顺序为 响弦 -> 目标外音 -> 覆盖 -> 跨度 -> 最优指法手指数；
  * 关闭时一切行为（含判定顺序、排序与排除计数）与旧版逐项一致。
+ *
+ * 双和弦切换预演（searchTransitions）：给定起点形状与下一和弦目标音级，
+ * 在「全部」合法下一形状（同一份枚举与指法判定，不先截单和弦前 20 名）上按
+ *   闷音状态变化弦数 -> 共同发声弦品位移动量之和 ->
+ *   跨度 -> 品位总和 -> 形状向量字典序
+ * 排序，返回前 20 个候选及逐弦变化；每个候选的横按结论直接取自枚举结果，
+ * 列表与 SVG 共用同一份 ChordResult，不各自重算。
  */
 
 /** 一根弦的取值：-1 表示闷音(x)，0..maxFret 表示该弦所按品位。 */
@@ -433,14 +440,23 @@ export function reasonDescription(reason: ExclusionReason, allowBarre = false): 
   return allowBarre ? REASON_DESCRIPTIONS_BARRE[reason] : REASON_DESCRIPTIONS[reason];
 }
 
+interface EnumeratedChords {
+  /** 全部合法形状（未排序、未截断）。 */
+  valid: ChordResult[];
+  /** 枚举到的全部方案数（(maxFret+2)^n）。 */
+  total: number;
+  excluded: Record<ExclusionReason, number>;
+}
+
 /**
- * 全枚举搜索。n 根弦、每根 (maxFret+2) 种取值，
+ * 全量枚举：n 根弦、每根 (maxFret+2) 种取值，
  * 6 弦 9 品时约 177 万个叶节点，单次亚秒级完成。
  * allowBarre 开启时按单横按指法模式判定手指数（见文件头说明）。
+ *
+ * 不做排序与截断：单和弦搜索与双和弦切换预演都必须在「全部合法形状」
+ * 上各自排序——切换预演严禁先截单和弦前 20 名再重排。
  */
-export function searchChords(rawInput: SearchInput): SearchOutput {
-  validateSearchParams(rawInput);
-
+function enumerateChords(rawInput: SearchInput): EnumeratedChords {
   const tuning = rawInput.tuning;
   const n = tuning.length;
   const targetSet = Array.from(new Set(rawInput.targets));
@@ -448,7 +464,6 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
   const minStrings = rawInput.minStrings ?? 3;
   const maxFingers = rawInput.maxFingers ?? 4;
   const maxSpan = rawInput.maxSpan ?? 4;
-  const limit = rawInput.limit ?? 20;
   const allowBarre = rawInput.allowBarre ?? false;
 
   // 目标音级位图，便于子集判断。
@@ -549,8 +564,20 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
 
   dfs(0, 0, 0);
 
+  return { valid, total: (maxFret + 2) ** n, excluded };
+}
+
+/**
+ * 全枚举搜索。在 {@link enumerateChords} 的全部合法形状上按
+ * 跨度 -> 品位总和 -> 形状向量字典序排序，只保留前 limit 个。
+ * allowBarre 开启时按单横按指法模式判定手指数（见文件头说明）。
+ */
+export function searchChords(rawInput: SearchInput): SearchOutput {
+  validateSearchParams(rawInput);
+  const limit = rawInput.limit ?? 20;
+
+  const { valid, total, excluded } = enumerateChords(rawInput);
   valid.sort(compareResults);
-  const total = (maxFret + 2) ** n;
   const validCount = valid.length;
   const truncated = validCount > limit;
   return {
@@ -558,6 +585,157 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
     total,
     valid: validCount,
     excluded,
+    truncated,
+  };
+}
+
+/* ------------------------------- 双和弦切换预演 ------------------------------ */
+
+/** 一根弦从当前形状切换到下一形状时的逐弦变化。 */
+export interface TransitionStringChange {
+  /** 起点品位（-1 = 闷音 x）。 */
+  from: Fret;
+  /** 下一形状品位（-1 = 闷音 x）。 */
+  to: Fret;
+  /** 闷音状态是否变化（x ↔ 发声）。 */
+  mutedChange: boolean;
+  /** 两次是否都发声（均非闷音）；只有共同发声弦才计品位移动量。 */
+  sharedRinging: boolean;
+  /** 共同发声时的品位移动量 |from - to|，否则为 0。 */
+  fretMove: number;
+}
+
+/** 一个下一和弦候选：合法形状结论 + 从起点形状切换的代价与逐弦变化。 */
+export interface TransitionCandidate {
+  /** 下一形状的完整合法结论（含横按），列表与 SVG 共用这同一份。 */
+  result: ChordResult;
+  /** 第一排序键：闷音状态发生变化（x ↔ 发声）的弦数。 */
+  mutedChanges: number;
+  /** 第二排序键：两次均发声各弦的品位移动量之和。 */
+  fretMove: number;
+  /** 逐弦变化，长度与定弦弦数一致。 */
+  changes: TransitionStringChange[];
+}
+
+export interface TransitionInput {
+  /** 各弦开放弦 MIDI 音高，低音弦在前、高音弦在后。 */
+  tuning: number[];
+  /** 起点（当前和弦）形状；只需结构合法，合法性由 evaluateShape 另行判定。 */
+  current: Shape;
+  /** 下一和弦目标音级（0=C .. 11=B），内部会去重。 */
+  nextTargets: number[];
+  /** 最大品位（含），与单和弦搜索共用同一约束。 */
+  maxFret: number;
+  minStrings?: number;
+  maxFingers?: number;
+  maxSpan?: number;
+  allowBarre?: boolean;
+  /** 返回候选上限，默认 20。 */
+  limit?: number;
+}
+
+export interface TransitionOutput {
+  candidates: TransitionCandidate[];
+  /** 合法下一形状总数（截断之前）。 */
+  valid: number;
+  /** 枚举到的全部方案数（(maxFret+2)^n）。 */
+  total: number;
+  /** 合法下一形状是否超过 limit。 */
+  truncated: boolean;
+}
+
+/**
+ * 计算逐弦变化与两个切换代价键：
+ *  - mutedChanges：闷音状态变化（(x↔发声)）的弦数；
+ *  - fretMove：仅在两次均发声的弦上累加 |from - to|，
+ *    闷音↔发声的弦不计品位移动（其代价已由 mutedChanges 体现）。
+ */
+export function transitionChanges(current: Shape, next: Shape): {
+  mutedChanges: number;
+  fretMove: number;
+  changes: TransitionStringChange[];
+} {
+  if (current.length !== next.length) throw new Error('两个形状的弦数必须一致');
+  let mutedChanges = 0;
+  let fretMove = 0;
+  const changes: TransitionStringChange[] = current.map((f, s) => {
+    const t = next[s];
+    const mutedChange = (f === -1) !== (t === -1);
+    if (mutedChange) mutedChanges++;
+    const sharedRinging = f !== -1 && t !== -1;
+    const move = sharedRinging ? Math.abs(f - t) : 0;
+    fretMove += move;
+    return { from: f, to: t, mutedChange, sharedRinging, fretMove: move };
+  });
+  return { mutedChanges, fretMove, changes };
+}
+
+/**
+ * 双和弦切换排序（负数表示 a 切换代价更小）：
+ *   闷音状态变化弦数 -> 共同发声弦品位移动量之和 ->
+ *   （仍并列）下一形状的跨度 -> 品位总和 -> 形状向量字典序。
+ */
+function compareTransition(a: TransitionCandidate, b: TransitionCandidate): number {
+  if (a.mutedChanges !== b.mutedChanges) return a.mutedChanges - b.mutedChanges;
+  if (a.fretMove !== b.fretMove) return a.fretMove - b.fretMove;
+  return compareResults(a.result, b.result);
+}
+
+/**
+ * 双和弦切换预演：在「全部」合法下一形状（与单和弦搜索同一份枚举与指法
+ * 判定，含单横按结论）上计算从 current 出发的切换代价，按
+ *   闷音状态变化弦数 -> 共同发声弦品位移动量之和 ->
+ *   跨度 -> 品位总和 -> 形状向量字典序
+ * 排序，只保留前 limit（默认 20）个。
+ *
+ * 注意：不会先截取单和弦搜索前 20 名再重排——枚举全量合法形状后独立排序。
+ * current 只做结构校验（弦数、取值范围）；它在当前定弦/模式/目标下是否仍
+ * 合法由调用方用 evaluateShape 判定，失效时应撤销预演。
+ */
+export function searchTransitions(rawInput: TransitionInput): TransitionOutput {
+  // 下一形状的合法性、横按结论完全复用单和弦搜索的参数校验与枚举器。
+  validateSearchParams({
+    tuning: rawInput.tuning,
+    targets: rawInput.nextTargets,
+    maxFret: rawInput.maxFret,
+    minStrings: rawInput.minStrings,
+    maxFingers: rawInput.maxFingers,
+    maxSpan: rawInput.maxSpan,
+    allowBarre: rawInput.allowBarre,
+    limit: rawInput.limit,
+  });
+  const { tuning, current, maxFret } = rawInput;
+  if (!Array.isArray(current) || current.length !== tuning.length) {
+    throw new Error('current 必须是与定弦等长的形状数组');
+  }
+  if (!current.every((f) => Number.isInteger(f) && f >= -1 && f <= maxFret)) {
+    throw new Error('current 每根弦必须是 -1（闷音）或 0..maxFret 的整数');
+  }
+  const limit = rawInput.limit ?? 20;
+
+  // 关键：枚举全部合法下一形状（不截断），再按切换代价独立排序。
+  const { valid, total } = enumerateChords({
+    tuning,
+    targets: rawInput.nextTargets,
+    maxFret,
+    minStrings: rawInput.minStrings,
+    maxFingers: rawInput.maxFingers,
+    maxSpan: rawInput.maxSpan,
+    allowBarre: rawInput.allowBarre,
+  });
+
+  const candidates: TransitionCandidate[] = valid.map((result) => {
+    const { mutedChanges, fretMove, changes } = transitionChanges(current, result.shape);
+    return { result, mutedChanges, fretMove, changes };
+  });
+  candidates.sort(compareTransition);
+
+  const validCount = candidates.length;
+  const truncated = validCount > limit;
+  return {
+    candidates: truncated ? candidates.slice(0, limit) : candidates,
+    valid: validCount,
+    total,
     truncated,
   };
 }

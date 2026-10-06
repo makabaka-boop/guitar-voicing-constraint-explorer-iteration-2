@@ -2,7 +2,7 @@
  * 指板 SVG 渲染与点击编辑。
  * 布局：弦纵向延伸（x 轴按弦分列，低音弦在左），品位沿 y 轴向下。
  */
-import { midiName, pcOfMidi, pcName, type Barre } from './search';
+import { midiName, pcOfMidi, pcName, type Barre, type TransitionStringChange } from './search';
 
 export interface FretboardOptions {
   tuning: number[];
@@ -16,6 +16,12 @@ export interface FretboardOptions {
   preferFlat: boolean;
   /** 该形状最优指法的横按结论；提供时绘制横按标记（与搜索/评估共用同一结论）。 */
   barre?: Barre | null;
+  /**
+   * 双和弦切换预演的逐弦变化：提供时每列底部绘制切换徽标
+   * （闷音状态变化 / 共同发声品位移动量）。徽标只渲染预演传入的结论，
+   * 不在 SVG 内自行重算。
+   */
+  changes?: TransitionStringChange[] | null;
   onToggle?: (stringIndex: number, fret: number) => void;
 }
 
@@ -34,11 +40,13 @@ function el<K extends keyof SVGElementTagNameMap>(
 
 export function renderFretboard(container: HTMLElement, opts: FretboardOptions): void {
   container.replaceChildren();
-  const { tuning, maxFret, shape, targetPcs, editable, preferFlat, barre, onToggle } = opts;
+  const { tuning, maxFret, shape, targetPcs, editable, preferFlat, barre, changes, onToggle } = opts;
   const n = tuning.length;
+  // 切换预演时在指板底部预留逐弦徽标空间。
+  const changeH = changes && changes.length === n ? 26 : 0;
 
   const width = MARGIN.left + MARGIN.right + (n - 1) * FRET_W;
-  const height = MARGIN.top + MARGIN.bottom + maxFret * FRET_H;
+  const height = MARGIN.top + MARGIN.bottom + maxFret * FRET_H + changeH;
   const svg = el('svg', {
     viewBox: `0 0 ${width} ${height}`,
     role: 'img',
@@ -180,6 +188,24 @@ export function renderFretboard(container: HTMLElement, opts: FretboardOptions):
     const t = el('text', { x: colX(s), y: 14, class: 'fb-open-label' });
     t.textContent = midiName(tuning[s], preferFlat);
     svg.appendChild(t);
+  }
+
+  // ---- 双和弦切换预演：每列底部的逐弦变化徽标（结论由调用方传入，不在此重算） ----
+  if (changes && changes.length === n) {
+    const cy = fretY(maxFret) + 22;
+    for (let s = 0; s < n; s++) {
+      const ch = changes[s];
+      const g = el('g', { class: 'fb-change' + (ch.mutedChange ? ' mute' : ch.fretMove > 0 ? ' move' : ' hold') });
+      const label = el('text', { x: colX(s), y: cy, class: 'fb-change-label' });
+      const fv = (f: number) => (f === -1 ? 'x' : String(f));
+      label.textContent = ch.sharedRinging
+        ? ch.fretMove === 0
+          ? `=${fv(ch.to)}`
+          : `${fv(ch.from)}→${fv(ch.to)}`
+        : `${fv(ch.from)}→${fv(ch.to)}`;
+      g.appendChild(label);
+      svg.appendChild(g);
+    }
   }
 
   // ---- 点击层（编辑模式） ----

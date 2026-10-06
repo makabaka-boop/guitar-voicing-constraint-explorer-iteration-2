@@ -375,6 +375,26 @@ button.ghost:hover {
   fill: rgba(232, 168, 62, 0.12);
 }
 
+/* 双和弦切换预演：逐弦变化徽标 */
+.fb-change-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.fb-change.mute .fb-change-label {
+  fill: var(--bad);
+}
+
+.fb-change.move .fb-change-label {
+  fill: var(--accent-2);
+}
+
+.fb-change.hold .fb-change-label {
+  fill: var(--good);
+}
+
 .eval-box {
   margin-top: 12px;
   border-radius: 8px;
@@ -471,6 +491,89 @@ button.ghost:hover {
   font-size: 12px;
   color: var(--muted);
   margin: 6px 0 0;
+}
+
+/* 双和弦切换预演 */
+.transition-panel {
+  margin-top: 16px;
+}
+
+.anchor-chips {
+  align-items: center;
+}
+
+.transition-banner {
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  margin: 6px 0;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.transition-banner.ok {
+  border-color: #3a6b4c;
+  background: #1e2c23;
+  color: var(--good);
+}
+
+.transition-banner.bad {
+  border-color: #6b352e;
+  background: #2e201d;
+  color: var(--bad);
+}
+
+.result-item.anchor {
+  border-color: #3a6b4c;
+}
+
+.transition-list {
+  margin-top: 8px;
+}
+
+.result-item .transition-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.transition-changes {
+  display: flex;
+  gap: 5px;
+}
+
+.tr-cell {
+  min-width: 30px;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  background: transparent;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+}
+
+.tr-cell.mute {
+  color: var(--bad);
+  border-color: #6b352e;
+  border-style: solid;
+}
+
+.tr-cell.move {
+  color: var(--accent-2);
+  border-color: var(--accent);
+}
+
+.tr-cell.hold {
+  color: var(--good);
+  border-color: #3a6b4c;
+}
+
+button.ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .footer {

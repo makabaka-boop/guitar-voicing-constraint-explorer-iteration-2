@@ -375,6 +375,105 @@ button.ghost:hover {
   fill: rgba(232, 168, 62, 0.12);
 }
 
+/* 切换预演：起点形状的空心标记与移动连线 */
+.fb-ghost {
+  fill: none;
+  stroke: var(--open);
+  stroke-width: 1.6;
+  stroke-dasharray: 4 3;
+  opacity: 0.85;
+}
+
+.fb-ghost.open {
+  stroke-width: 1.4;
+}
+
+.fb-ghost.muted {
+  fill: none;
+  stroke: var(--muted-string);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 3;
+}
+
+.fb-shift {
+  stroke: var(--open);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  opacity: 0.55;
+}
+
+/* 切换预演面板 */
+.transition-from {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.transition-stats {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.transition-item {
+  display: block;
+}
+
+.transition-line {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.change-row {
+  display: flex;
+  gap: 5px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.change-chip {
+  min-width: 34px;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+}
+
+.change-chip.kind-stay {
+  color: var(--text);
+  background: #2f343f;
+}
+
+.change-chip.kind-move {
+  color: var(--accent-2);
+  border-color: var(--accent);
+}
+
+.change-chip.kind-mute {
+  color: var(--bad);
+  border-style: dashed;
+}
+
+.change-chip.kind-unmute {
+  color: var(--good);
+}
+
+.change-chip.kind-keep_muted {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.transition-start {
+  margin-top: 8px;
+}
+
 .eval-box {
   margin-top: 12px;
   border-radius: 8px;

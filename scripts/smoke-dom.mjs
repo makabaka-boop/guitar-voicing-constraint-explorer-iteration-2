@@ -113,6 +113,58 @@ rects()[1 * (maxFret + 1) + 3].dispatchEvent(new dom.window.Event('click', { bub
 const customTitle = doc.querySelector('.eval-title').textContent;
 assert(customTitle.includes('合法') || customTitle.includes('被排除'), `点击后评估刷新（${customTitle}）`);
 
+// 7.5 双和弦切换预演：激活、切换标记、逐弦变化、空结果与状态清理
+[...doc.querySelectorAll('.tabs button')].find((b) => b.textContent.includes('预览')).click();
+doc.querySelectorAll('.result-item')[0].click(); // 选中单和弦 #1
+doc.querySelector('.transition-start').click(); // 以此为起点预演切换
+assert(doc.querySelector('.transition-panel') !== null, '切换预演面板出现');
+const tItems = () => doc.querySelectorAll('.transition-item');
+assert(tItems().length > 0 && tItems().length <= 20, `切换结果数量 1..20（${tItems().length}）`);
+// 起点形状本身合法 -> 切换 #1 是原地不动（闷变 0、移动量 0）
+const firstMeta = tItems()[0].querySelector('.result-meta').textContent;
+assert(firstMeta.includes('闷变0') && firstMeta.includes('移0'), `切换 #1 为零代价（${firstMeta}）`);
+const firstChangeChips = [...tItems()[0].querySelectorAll('.change-chip')];
+assert(firstChangeChips.length === 6 && firstChangeChips[0].textContent === '0→0', '逐弦变化 chips 逐弦对应');
+// 切换标记：指板上的起点空心标记
+assert(doc.querySelectorAll('.fb-ghost').length > 0, '指板显示起点切换标记（fb-ghost）');
+// 点击一个含品位移动的候选 -> 移动连线与评估更新
+const moveItem = [...tItems()].find((it) => it.querySelector('.change-chip.kind-move'));
+moveItem.click();
+assert(doc.querySelectorAll('.fb-shift').length > 0, '品位移动弦显示移动连线（fb-shift）');
+assert(doc.querySelector('.eval-title').textContent.includes('切换目标 #'), '切换评估框更新');
+// 空结果：3 品内 {C,C#} 无法弹响 3 根弦
+const fretSel3 = doc.querySelectorAll('select')[3];
+fretSel3.value = '3';
+fretSel3.dispatchEvent(new dom.window.Event('change'));
+assert(doc.querySelector('.transition-panel') !== null, '最大品位收紧后预演仍保留（起点仍合法）');
+const clickTpc = (i) => doc.querySelectorAll('.tpc-btn')[i].click();
+clickTpc(4); // 关 E
+clickTpc(8); // 关 G#
+clickTpc(11); // 关 B
+clickTpc(0); // 开 C
+clickTpc(1); // 开 C#
+const emptyBox = doc.querySelector('.transition-empty');
+assert(emptyBox !== null && emptyBox.textContent.includes('空'), '无合法下一形状时明确显示空结果');
+assert(
+  doc.querySelector('.eval-box.bad .eval-title').textContent.includes('没有可切换到的合法下一形状'),
+  '评估框同步显示空结果',
+);
+const fretSel4 = doc.querySelectorAll('select')[3];
+fretSel4.value = '5';
+fretSel4.dispatchEvent(new dom.window.Event('change'));
+// 状态清理：当前目标音级编辑使起点不再合法 -> 撤销预演、保留单和弦功能
+doc.querySelectorAll('.pc-btn')[11].click(); // 关闭 B：起点形状含 B 音级 -> 不再合法
+assert(doc.querySelector('.transition-panel') === null, '起点失效后切换预演被撤销');
+assert(doc.querySelectorAll('.result-item').length > 0, '撤销后单和弦结果列表仍在');
+assert(doc.querySelector('.eval-title').textContent.includes('合法形状'), '撤销后回到单和弦预览');
+doc.querySelectorAll('.pc-btn')[11].click(); // 恢复 B
+// 退出按钮：重新激活后退出
+doc.querySelector('.transition-start').click();
+assert(doc.querySelector('.transition-panel') !== null, '重新激活切换预演');
+doc.querySelector('.transition-exit').click();
+assert(doc.querySelector('.transition-panel') === null, '退出预演按钮清理状态');
+assert(doc.querySelector('.eval-title').textContent.includes('合法形状'), '退出后回到单和弦预览');
+
 // 8. 改成不可能的目标（E/G#/B 中关掉两个，只剩 1 个）-> 显示错误且无结果
 doc.querySelectorAll('.pc-btn')[11].click(); // 关闭 B
 doc.querySelectorAll('.pc-btn')[8].click(); // 关闭 G#（重新渲染后重新查询）

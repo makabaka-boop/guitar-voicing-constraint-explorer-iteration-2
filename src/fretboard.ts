@@ -16,6 +16,11 @@ export interface FretboardOptions {
   preferFlat: boolean;
   /** 该形状最优指法的横按结论；提供时绘制横按标记（与搜索/评估共用同一结论）。 */
   barre?: Barre | null;
+  /**
+   * 切换预演的起点形状：提供时为每弦绘制空心起点标记（按弦为虚线圆、
+   * 开放为空心小圆、闷音为虚线 X），两次均发声且品位变化的弦再画移动连线。
+   */
+  ghostShape?: number[] | null;
   onToggle?: (stringIndex: number, fret: number) => void;
 }
 
@@ -34,7 +39,7 @@ function el<K extends keyof SVGElementTagNameMap>(
 
 export function renderFretboard(container: HTMLElement, opts: FretboardOptions): void {
   container.replaceChildren();
-  const { tuning, maxFret, shape, targetPcs, editable, preferFlat, barre, onToggle } = opts;
+  const { tuning, maxFret, shape, targetPcs, editable, preferFlat, barre, ghostShape, onToggle } = opts;
   const n = tuning.length;
 
   const width = MARGIN.left + MARGIN.right + (n - 1) * FRET_W;
@@ -145,6 +150,55 @@ export function renderFretboard(container: HTMLElement, opts: FretboardOptions):
         rx: 13,
       }),
     );
+  }
+
+  // ---- 切换预演：起点形状的空心标记与移动连线（画在当前形状标记之下） ----
+  if (ghostShape) {
+    for (let s = 0; s < n; s++) {
+      const g = ghostShape[s];
+      if (g === undefined) continue;
+      const to = shape[s];
+      if (g > 0) {
+        // 两次均发声且品位变化：从起点到终点的移动连线。
+        if (to > 0 && to !== g) {
+          svg.appendChild(
+            el('line', {
+              class: 'fb-shift',
+              x1: colX(s),
+              y1: markerY(g),
+              x2: colX(s),
+              y2: markerY(to),
+            }),
+          );
+        }
+        svg.appendChild(el('circle', { class: 'fb-ghost', cx: colX(s), cy: markerY(g), r: 13 }));
+      } else if (g === 0) {
+        // 开放弦起点 -> 按弦：从琴枕上方连到目标品位。
+        if (to > 0) {
+          svg.appendChild(
+            el('line', {
+              class: 'fb-shift',
+              x1: colX(s),
+              y1: fretY(0) - 20,
+              x2: colX(s),
+              y2: markerY(to),
+            }),
+          );
+        }
+        svg.appendChild(el('circle', { class: 'fb-ghost open', cx: colX(s), cy: fretY(0) - 20, r: 8 }));
+      } else {
+        // 闷音起点：琴枕上方虚线 X。
+        const cx = colX(s);
+        const cy = fretY(0) - 20;
+        const r = 7;
+        svg.appendChild(
+          el('line', { class: 'fb-ghost muted', x1: cx - r, y1: cy - r, x2: cx + r, y2: cy + r }),
+        );
+        svg.appendChild(
+          el('line', { class: 'fb-ghost muted', x1: cx + r, y1: cy - r, x2: cx - r, y2: cy + r }),
+        );
+      }
+    }
   }
 
   // ---- 当前形状的手指/开放/闷音标记 ----

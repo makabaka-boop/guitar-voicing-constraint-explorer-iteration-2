@@ -13,6 +13,12 @@
  * bestFingering），以最优指法所需手指数 <= maxFingers 为放行条件。
  * 开启后排除原因的判定顺序为 响弦 -> 目标外音 -> 覆盖 -> 跨度 -> 最优指法手指数；
  * 关闭时一切行为（含判定顺序、排序与排除计数）与旧版逐项一致。
+ *
+ * 双和弦切换预演（searchTransitions）：给定当前形状 from 与下一和弦
+ * 目标音级，先由 searchChords 取出全部合法下一形状（不按旧排序截断），
+ * 再按切换代价排序：闷音状态变化的弦数 -> 两次均发声弦的品位移动量之和
+ * -> 跨度 -> 品位总和 -> 形状向量字典序，取前 limit 个并给出逐弦变化。
+ * 下一形状的合法性、手指数与横按结论完全复用 searchChords/bestFingering。
  */
 
 /** 一根弦的取值：-1 表示闷音(x)，0..maxFret 表示该弦所按品位。 */
@@ -559,5 +565,132 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
     valid: validCount,
     excluded,
     truncated,
+  };
+}
+
+/* ------------------------------ 双和弦切换预演 ------------------------------ */
+
+/** 一根弦从当前形状到下一形状的变化类别。 */
+export type StringChangeKind =
+  /** 两次均发声且品位不变。 */
+  | 'stay'
+  /** 两次均发声且品位移动。 */
+  | 'move'
+  /** 发声 -> 闷音。 */
+  | 'mute'
+  /** 闷音 -> 发声。 */
+  | 'unmute'
+  /** 两次均闷音。 */
+  | 'keep_muted';
+
+/** 一根弦的逐弦变化明细。 */
+export interface StringChange {
+  from: Fret;
+  to: Fret;
+  kind: StringChangeKind;
+  /** 两次均发声时的品位移动量 |to - from|；其余情况为 0。 */
+  delta: number;
+}
+
+/** 一个候选下一形状及其相对当前形状的切换代价。 */
+export interface TransitionResult {
+  /** 下一和弦形状；合法性、手指数与横按结论全部来自 searchChords。 */
+  result: ChordResult;
+  /** 闷音状态变化的弦数（发声 ↔ 闷音）。 */
+  muteChanges: number;
+  /** 两次均发声的各弦品位移动量之和。 */
+  movement: number;
+  /** 逐弦变化明细（低音弦 -> 高音弦）。 */
+  changes: StringChange[];
+}
+
+export interface TransitionSearchInput extends SearchInput {
+  /** 当前（起点）形状：与 tuning 等长，每弦 -1（闷音）或 0..maxFret。 */
+  from: Shape;
+}
+
+export interface TransitionOutput {
+  /** 起点形状快照。 */
+  from: Shape;
+  /** 按切换代价排序后的前 limit 个下一形状。 */
+  results: TransitionResult[];
+  /** 枚举到的全部方案数（(maxFret+2)^n）。 */
+  total: number;
+  /** 合法下一形状总数（截断之前）。 */
+  valid: number;
+  /** 合法下一形状是否超过 limit（即返回结果被截断）。 */
+  truncated: boolean;
+}
+
+function stringChange(from: Fret, to: Fret): StringChange {
+  if (from === -1 && to === -1) return { from, to, kind: 'keep_muted', delta: 0 };
+  if (from === -1) return { from, to, kind: 'unmute', delta: 0 };
+  if (to === -1) return { from, to, kind: 'mute', delta: 0 };
+  const delta = Math.abs(to - from);
+  return { from, to, kind: delta === 0 ? 'stay' : 'move', delta };
+}
+
+/**
+ * 切换代价排序：闷音状态变化的弦数 -> 两次均发声弦的品位移动量之和；
+ * 仍并列时沿用单和弦规则的 跨度 -> 品位总和 -> 形状向量字典序。
+ */
+function compareTransition(a: TransitionResult, b: TransitionResult): number {
+  if (a.muteChanges !== b.muteChanges) return a.muteChanges - b.muteChanges;
+  if (a.movement !== b.movement) return a.movement - b.movement;
+  return compareResults(a.result, b.result);
+}
+
+/**
+ * 双和弦切换预演：沿用当前定弦与全部约束，在**全部**合法下一形状中
+ * 找切换动作最小者，而非把单和弦搜索的前 20 名拿来重排。
+ *
+ * 先由 searchChords 取出不截断的全部合法下一形状，再按切换代价
+ * （闷音变化弦数 -> 品位移动量之和 -> 跨度 -> 品位总和 -> 形状向量）
+ * 排序并截取前 limit 个——因此结果可能包含单和弦排名 20 名之外、
+ * 但离当前形状最近的形状。下一形状的合法性、手指数与横按结论完全
+ * 复用 searchChords / bestFingering，本函数不再重算。
+ */
+export function searchTransitions(rawInput: TransitionSearchInput): TransitionOutput {
+  validateSearchParams(rawInput);
+  const { tuning, maxFret } = rawInput;
+  const from = rawInput.from;
+  if (!Array.isArray(from) || from.length !== tuning.length) {
+    throw new Error('from 形状长度必须与弦数一致');
+  }
+  if (!from.every((f) => Number.isInteger(f) && f >= -1 && f <= maxFret)) {
+    throw new Error('from 每弦必须为 -1（闷音）或 0..maxFret 的整数品位');
+  }
+  const limit = rawInput.limit ?? 20;
+
+  // 全量合法下一形状（不在旧排序下截断），合法性/横按结论由搜索引擎统一判定。
+  const all = searchChords({
+    tuning: rawInput.tuning,
+    targets: rawInput.targets,
+    maxFret,
+    minStrings: rawInput.minStrings,
+    maxFingers: rawInput.maxFingers,
+    maxSpan: rawInput.maxSpan,
+    allowBarre: rawInput.allowBarre,
+    limit: Number.MAX_SAFE_INTEGER,
+  });
+
+  const rows: TransitionResult[] = all.results.map((result) => {
+    const changes = from.map((f, s) => stringChange(f, result.shape[s]));
+    let muteChanges = 0;
+    let movement = 0;
+    for (const c of changes) {
+      if (c.kind === 'mute' || c.kind === 'unmute') muteChanges++;
+      movement += c.delta;
+    }
+    return { result, muteChanges, movement, changes };
+  });
+  rows.sort(compareTransition);
+
+  return {
+    from: from.slice(),
+    results: rows.slice(0, limit),
+    total: all.total,
+    valid: all.valid,
+    truncated: all.valid > limit,
   };
 }

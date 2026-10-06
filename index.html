@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>指板和弦形状搜索（离线）</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>指板和弦形状搜索</h1>
+      <p class="subtitle">
+        纯本地 TypeScript 全枚举 · 输入开放弦 MIDI 与目标音级，只展示真正按得出来的形状
+      </p>
+    </header>
+    <main id="app"></main>
+    <footer class="footer">
+      所有计算在浏览器本地完成，无任何网络请求。排序：跨度 → 品位总和 → 形状向量字典序（闷音 x 排在品位之后）。
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

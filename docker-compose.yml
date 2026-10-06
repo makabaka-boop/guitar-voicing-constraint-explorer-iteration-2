@@ -1,0 +1,10 @@
+services:
+  fret:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fret-fretboard:latest
+    container_name: fret
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
